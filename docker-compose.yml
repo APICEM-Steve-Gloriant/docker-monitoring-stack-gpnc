@@ -19,8 +19,9 @@ services:
     container_name: grafana
     restart: unless-stopped
     environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:?set_me}
       - GF_USERS_DEFAULT_THEME=light
       - GF_LOG_MODE=console
       - GF_LOG_LEVEL=critical
@@ -35,7 +36,8 @@ services:
       - ./dashboards/log-search.json:/var/lib/grafana/dashboards/log-search.json:ro
       - grafana-data:/var/lib/grafana
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     ports:
       - 3000:3000
     cpus: 0.5
@@ -45,6 +47,11 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION:-v2.42.0}
@@ -52,7 +59,8 @@ services:
     restart: unless-stopped
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--log.level=error'
+      - '--web.enable-lifecycle'
+      - '--log.level=warn'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=7d'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
@@ -74,6 +82,11 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION:-v0.46.0}
@@ -95,6 +108,13 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
 
   node-exporter:
     image: prom/node-exporter:${NODE_EXPORTER_VERSION:-v1.5.0}
@@ -107,8 +127,7 @@ services:
     command:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.ignored-mount-points'
-      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)'
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -116,6 +135,11 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9100/metrics"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
 
   alertmanager:
     image: prom/alertmanager:${ALERTMANAGER_VERSION:-v0.25.0}
@@ -126,7 +150,8 @@ services:
       - '--storage.path=/alertmanager'
       - '--web.external-url=http://localhost:9093'
     volumes:
-      - ./configs/alertmanager/alertmanager-fallback-config.yml:/etc/alertmanager/config.yml
+      - ./configs/alertmanager/alertmanager-fallback-config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager-data:/alertmanager
     ports:
       - 9093:9093
     cpus: 0.5
@@ -138,6 +163,11 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   uncomplicated-alert-receiver:
     image: ghcr.io/jamesread/uncomplicated-alert-receiver
@@ -173,8 +203,9 @@ services:
       - 3100:3100
     command: -config.file=/etc/loki/loki.yaml
     volumes:
-      - ./configs/loki/loki.yaml:/etc/loki/loki.yaml
-      - ./configs/loki/rules.yaml:/etc/loki/rules/fake/loki-rules.yml
+      - ./configs/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - ./configs/loki/rules.yaml:/etc/loki/rules/fake/loki-rules.yml:ro
+      - loki-data:/loki
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -182,6 +213,11 @@ services:
     labels:
       <<: *default-labels
     logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
 
   promtail:
     image:  grafana/promtail:3.3.2
@@ -192,7 +228,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: -config.file=/etc/promtail/docker-config.yaml
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -204,6 +241,8 @@ services:
 volumes:
   grafana-data: {}
   prometheus-data: {}
+  alertmanager-data: {}
+  loki-data: {}
 
 networks:
   monitoring:
